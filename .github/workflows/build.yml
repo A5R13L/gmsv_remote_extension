@@ -34,7 +34,7 @@ jobs:
             - name: Publish extension
               env:
                   VSCE_TOKEN: ${{ secrets.VSCE_TOKEN }}
-              run: vsce publish --pat ${{ env.VSCE_TOKEN }} --packagePath gmod-remote-${VERSION}.vsix
+              run: vsce publish --pat ${{ env.VSCE_TOKEN }}
             
             - name: Upload extension
               uses: svenstaro/upload-release-action@2.7.0
