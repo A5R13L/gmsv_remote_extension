@@ -157,7 +157,7 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 	}
 
 	async writeFile(uri: vscode.Uri, content: Uint8Array) {
-		if (!this.connected) {	
+		if (!this.connected) {
 			throw vscode.FileSystemError.Unavailable("Not connected");
 		}
 
@@ -239,7 +239,14 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 	}
 
 	async connect(server: Server) {
-		await this.context.globalState.update("gmodRemote.activeConnection", {
+		// Store in workspace state for this remote window
+		await this.context.workspaceState.update("gmodRemote.activeConnection", {
+			server,
+			connectionTime: Date.now()
+		});
+
+		// Also store in global state for reference (but don't auto-connect from it)
+		await this.context.globalState.update("gmodRemote.lastConnection", {
 			server,
 			connectionTime: Date.now()
 		});
@@ -250,18 +257,21 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 	}
 
 	async restoreConnection() {
-		const savedConnection = this.context.globalState.get<ActiveConnection | undefined>("gmodRemote.activeConnection");
+		// Only auto-connect if we're in a remote window (check workspace state)
+		const savedConnection = this.context.workspaceState.get<ActiveConnection | undefined>("gmodRemote.activeConnection");
 
 		if (!savedConnection || !savedConnection.server) {
 			return;
 		}
 
-		this.connect(savedConnection.server);
+		this.relay.connect(savedConnection.server.relay, savedConnection.server.address, savedConnection.server.password, savedConnection.server.encryptionKey).then(() => {
+			this.setupWorkspace(savedConnection.server);
+		});
 	}
 
 	disconnect() {
 		this.relay.disconnect();
 		this.connected = false;
-		this.context.globalState.update("gmodRemote.activeConnection", undefined);
+		this.context.workspaceState.update("gmodRemote.activeConnection", undefined);
 	}
 }

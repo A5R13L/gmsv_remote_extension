@@ -10,7 +10,8 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onUri"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -85,7 +86,13 @@
           }
         }
       }
-    }
+    },
+    "uriHandlers": [
+      {
+        "name": "gmod-remote",
+        "scheme": "vscode"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
