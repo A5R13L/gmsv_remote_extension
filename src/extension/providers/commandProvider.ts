@@ -5,8 +5,6 @@ import { Server } from "../types";
 import { useRemoteFS } from "./fileSystemProvider";
 
 export function useCommands(context: vscode.ExtensionContext, relay: RelayClient) {
-	const remoteFS = useRemoteFS(relay, context);
-	
 	context.subscriptions.push(vscode.commands.registerCommand("gmod-remote.connect", async () => {
 		const currentServers = getServers();
 
@@ -81,14 +79,11 @@ export function useCommands(context: vscode.ExtensionContext, relay: RelayClient
 			return;
 		};
 
-		// Open a new window with the remote connection via URI
-		const serverJson = encodeURIComponent(JSON.stringify(server));
-		const uri = vscode.Uri.parse(`vscode://gmod-remote/connect?server=${serverJson}`);
-		await vscode.env.openExternal(uri);
+		useRemoteFS(relay, context).connect(server);
 	}));
 
 	context.subscriptions.push(vscode.commands.registerCommand("gmod-remote.disconnect", async () => {
-		remoteFS.disconnect();
+		useRemoteFS(relay, context).disconnect();
 	}));
 }
 

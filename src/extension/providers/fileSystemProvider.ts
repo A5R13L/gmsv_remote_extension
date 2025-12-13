@@ -108,8 +108,12 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 		});
 
 		if (!res.success) {
-
-			throw FileSystemError.FileNotFound(uri.path);
+			switch (res.error_code) {
+				case "not_a_directory":
+					throw vscode.FileSystemError.FileNotADirectory(uri.path);
+				default:
+					throw vscode.FileSystemError.FileNotFound(uri.path);
+			}
 		}
 
 		return res.entries.map((e: any) => [
@@ -127,22 +131,18 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 
 		const serverPath = this.toServerPath(uri);
 
-		const stat = await this.relay.rpc("FS.Stat", {
+
+		const res = await this.relay.rpc("FS.Read", {
 			path: serverPath
 		});
 
-		if (!stat.success) {
-			throw FileSystemError.FileNotFound(uri.path);
-		}
-
-		const res = await this.relay.rpc("FS.Read", {
-			path: serverPath,
-			offset: 0,
-			length: stat.size
-		});
-
 		if (!res.success) {
-			throw FileSystemError.FileNotFound(uri.path);
+			switch (res.error_code) {
+				case "not_a_file":
+					throw FileSystemError.FileIsADirectory(uri.path);
+				default:
+					throw FileSystemError.FileNotFound(uri.path);
+			}
 		}
 
 		let fileChunks: Uint8Array[] = [];
@@ -179,6 +179,30 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 		this.refresh(uri);
 	}
 
+	async copy(sourceUri: vscode.Uri, destinationUri: vscode.Uri) {
+		if (!this.connected) {
+			throw vscode.FileSystemError.Unavailable("Not connected");
+		}
+
+		const res = await this.relay.rpc("FS.Copy", {
+			from: this.toServerPath(sourceUri),
+			to: this.toServerPath(destinationUri)
+		});
+
+		if (!res.success) {
+			switch (res.error_code) {
+				case "file_not_found":
+					throw FileSystemError.FileNotFound(sourceUri.path);
+				case "file_already_exists":
+					throw FileSystemError.FileExists(destinationUri.path);
+				default:
+					throw FileSystemError.FileNotFound(sourceUri.path);
+			}
+		}
+
+		this.refresh(destinationUri);
+	}
+
 	async createDirectory(uri: vscode.Uri) {
 		if (!this.connected) {
 			throw vscode.FileSystemError.Unavailable("Not connected");
@@ -189,7 +213,12 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 		});
 
 		if (!res.success) {
-			throw FileSystemError.FileNotFound(uri.path);
+			switch (res.error_code) {
+				case "directory_already_exists":
+					throw vscode.FileSystemError.FileExists(uri.path);
+				default:
+					throw vscode.FileSystemError.FileNotFound(uri.path);
+			}
 		}
 
 		this.refresh(uri);
@@ -222,7 +251,12 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 		});
 
 		if (!res.success) {
-			throw FileSystemError.FileNotFound(newUri.path);
+			switch (res.error_code) {
+				case "file_already_exists":
+					throw FileSystemError.FileExists(newUri.path);
+				default:
+					throw FileSystemError.FileNotFound(newUri.path);
+			}
 		}
 
 		this.refresh(newUri);
@@ -238,35 +272,42 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 		});
 	}
 
-	async connect(server: Server) {
-		// Store in workspace state for this remote window
+	async connect(server: Server, isRestore = false) {
 		await this.context.workspaceState.update("gmodRemote.activeConnection", {
 			server,
 			connectionTime: Date.now()
 		});
 
-		// Also store in global state for reference (but don't auto-connect from it)
-		await this.context.globalState.update("gmodRemote.lastConnection", {
-			server,
-			connectionTime: Date.now()
-		});
+		if (!isRestore) {
+			await this.context.globalState.update("gmodRemote.pendingConnection", {
+				server,
+				connectionTime: Date.now()
+			});
+		}
 
 		this.relay.connect(server.relay, server.address, server.password, server.encryptionKey).then(() => {
 			this.setupWorkspace(server);
+			if (!isRestore) {
+				this.context.globalState.update("gmodRemote.pendingConnection", undefined);
+			}
 		});
 	}
 
 	async restoreConnection() {
-		// Only auto-connect if we're in a remote window (check workspace state)
-		const savedConnection = this.context.workspaceState.get<ActiveConnection | undefined>("gmodRemote.activeConnection");
+		let savedConnection = this.context.workspaceState.get<ActiveConnection | undefined>("gmodRemote.activeConnection");
 
 		if (!savedConnection || !savedConnection.server) {
-			return;
+			const pendingConnection = this.context.globalState.get<ActiveConnection | undefined>("gmodRemote.pendingConnection");
+			if (pendingConnection && pendingConnection.server) {
+				await this.context.workspaceState.update("gmodRemote.activeConnection", pendingConnection);
+				await this.context.globalState.update("gmodRemote.pendingConnection", undefined);
+				savedConnection = pendingConnection;
+			} else {
+				return;
+			}
 		}
 
-		this.relay.connect(savedConnection.server.relay, savedConnection.server.address, savedConnection.server.password, savedConnection.server.encryptionKey).then(() => {
-			this.setupWorkspace(savedConnection.server);
-		});
+		this.connect(savedConnection.server, true);
 	}
 
 	disconnect() {
