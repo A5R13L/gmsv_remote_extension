@@ -90,6 +90,8 @@ export class RelayClient extends EventEmitter {
 			});
 
 			this.ws.on("message", (d, isBinary) => {
+				console.log("msg", d.toString());
+
 				if (isBinary) {
 					if (!this.pendingBinaryChunk) {
 						return;
@@ -126,8 +128,8 @@ export class RelayClient extends EventEmitter {
 				}
 
 				if (msg.type === "client_hello_failure") {
-					vscode.window.showErrorMessage("Failed to connect to server: Wrong password or server is down.");
-
+					vscode.window.showErrorMessage("Failed to connect to server. Ensure the server is running and the password is correct.");
+					
 					setTimeout(() => {
 						if (this.dontAttemptToReconnect || this.connected) {
 							return;

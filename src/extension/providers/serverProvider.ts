@@ -13,3 +13,15 @@ export function storeNewServer(servers: Server[], server: Server) {
 	const newServers = [...servers, server];
 	config.update("gmodRemote.servers", newServers, vscode.ConfigurationTarget.Global);
 }
+
+export function removeServer(servers: Server[], id: number) {
+	const config = vscode.workspace.getConfiguration();
+	const newServers = servers.filter((_, idx) => idx !== id);
+	config.update("gmodRemote.servers", newServers, vscode.ConfigurationTarget.Global);
+}
+
+export function getActiveServer() {
+	const config = vscode.workspace.getConfiguration();
+	const activeServer = config.get<Server | undefined>("gmodRemote.activeServer");
+	return activeServer;
+}
