@@ -42,5 +42,5 @@ jobs:
                   repo_name: A5R13L/gmsv_remote_extension
                   repo_token: ${{ secrets.GITHUB_TOKEN }}
                   body: "gmsv_remote_extension"
-                  file: gmod-remote-*.vsix
-                  asset_name: gmod-remote.vsix
+                  file: gmod-remote-${{ env.VERSION }}.vsix
+                  asset_name: gmod-remote-${{ env.VERSION }}.vsix
