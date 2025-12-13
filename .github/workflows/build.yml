@@ -1,0 +1,42 @@
+name: build
+
+on:
+    push:
+        tags:
+            - "v*.*.*"
+    workflow_dispatch:
+
+permissions:
+    contents: write
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  submodules: "recursive"
+
+            - name: Install extension dependencies
+              run: npm install
+
+            - name: Install vsce
+              run: npm install -g vsce
+
+            - name: Package VSIX
+              run: vsce package
+
+            - name: Publish extension
+              env:
+                  VSCE_TOKEN: ${{ secrets.VSCE_TOKEN }}
+              run: vsce publish --pat ${{ env.VSCE_TOKEN }} --packagePath gmod-remote-*.vsix
+            
+            - name: Upload extension
+              uses: svenstaro/upload-release-action@2.7.0
+              with:
+                  repo_name: A5R13L/gmsv_remote_extension
+                  repo_token: ${{ secrets.GITHUB_TOKEN }}
+                  body: "gmsv_remote_extension"
+                  file: gmod-remote-*.vsix
+                  asset_name: gmod-remote.vsix
