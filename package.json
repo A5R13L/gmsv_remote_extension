@@ -115,7 +115,7 @@
     "vscode": "^1.1.37",
     "ws": "^8.18.3"
   },
-  "publisher": "A5R13L",
+  "publisher": "asrieldev",
   "repository": {
     "type": "git",
     "url": "https://github.com/A5R13L/gmsv_remote_extension"
