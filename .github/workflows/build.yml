@@ -27,10 +27,14 @@ jobs:
             - name: Package VSIX
               run: vsce package
 
+            - name: Get extension version
+              id: version
+              run: echo "VERSION=$(node -p "require('./package.json').version")" >> $GITHUB_ENV
+
             - name: Publish extension
               env:
                   VSCE_TOKEN: ${{ secrets.VSCE_TOKEN }}
-              run: vsce publish --pat ${{ env.VSCE_TOKEN }} --packagePath gmod-remote-*.vsix
+              run: vsce publish --pat ${{ env.VSCE_TOKEN }} --packagePath gmod-remote-${VERSION}.vsix
             
             - name: Upload extension
               uses: svenstaro/upload-release-action@2.7.0
