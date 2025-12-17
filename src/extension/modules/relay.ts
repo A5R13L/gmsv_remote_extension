@@ -82,7 +82,7 @@ export class RelayClient extends EventEmitter {
 					type: "client_hello",
 					serverAddress: address,
 					serverPassword: password,
-					clientName: os.hostname()
+					clientName: os.userInfo().username || "Unknown"
 				});
 
 				this.heartbeat = setInterval(() => {
