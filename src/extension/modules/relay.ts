@@ -2,8 +2,10 @@ import * as vscode from "vscode";
 import WebSocket from "ws";
 import { EventEmitter } from "events";
 import { xorBuffer } from "./xor";
+import { RelayMessage, RelayRPCRequest, RelayRPCResponses } from "../types";
+import os from "os";
 
-export function encode(data: any, encryptionKey: string | null): string {
+export function encode(data: RelayRPCRequest, encryptionKey: string | null): string {
 	const jsonBuf = Buffer.from(JSON.stringify(data), "utf8");
 
 	if (!encryptionKey || encryptionKey.length === 0) {
@@ -18,7 +20,7 @@ export function decode(
 	data: string | Buffer,
 	encryptionKey: string | null,
 	isBinary = false
-): any {
+): RelayRPCResponses | Buffer<ArrayBufferLike> {
 	const raw = isBinary
 		? Buffer.isBuffer(data) ? data : Buffer.from(data)
 		: Buffer.from(data as string, "base64");
@@ -31,16 +33,24 @@ export function decode(
 	return isBinary ? decrypted : JSON.parse(decrypted.toString("utf8"));
 }
 
+function parseMessage(data: string): RelayMessage | null {
+	try {
+		return JSON.parse(data);
+	} catch {
+		return null;
+	}
+}
+
 export class RelayClient extends EventEmitter {
 	private ws!: WebSocket;
 	private requestId = 1;
 	private connected = false;
 	private heartbeat?: NodeJS.Timeout;
 	private lastPong = Date.now();
-	private pending = new Map<number, (v: any) => void>();
+	private pending = new Map<number, (v: RelayRPCResponses) => void>();
 	private serverName = "";
 	private encryptionKey: string | null = null;
-	private pendingStreams = new Map<number, { onChunk: (chunk: any) => void, onEnd: () => void }>();
+	private pendingStreams = new Map<number, { onChunk: (chunk: Buffer<ArrayBufferLike>) => void, onEnd: () => void }>();
 	private dontAttemptToReconnect = false;
 
 	private pendingBinaryChunk:
@@ -71,15 +81,17 @@ export class RelayClient extends EventEmitter {
 				this.send({
 					type: "client_hello",
 					serverAddress: address,
-					serverPassword: password
+					serverPassword: password,
+					clientName: os.hostname()
 				});
 
 				this.heartbeat = setInterval(() => {
 					if (Date.now() - this.lastPong > 30000) {
-						console.warn("Heartbeat timeout, terminating");
+						console.warn("Heartbeat requestTimeout, terminating");
 						this.ws.terminate();
 					} else {
 						try { this.ws.ping(); } catch { }
+
 						this.send({ type: "ping" });
 					}
 				}, 10000);
@@ -90,10 +102,9 @@ export class RelayClient extends EventEmitter {
 			});
 
 			this.ws.on("message", (d, isBinary) => {
-				console.log("msg", d.toString());
-
 				if (isBinary) {
 					if (!this.pendingBinaryChunk) {
+						console.error("We received a binary chunk but we don't have a pending binary chunk!");
 						return;
 					}
 
@@ -103,22 +114,19 @@ export class RelayClient extends EventEmitter {
 					const handler = this.pendingStreams.get(requestId);
 
 					if (!handler) {
+						console.error("We received a binary chunk but we don't have a pending binary chunk handler!");
 						return;
 					}
 
 					const raw = Buffer.isBuffer(d) ? d : Buffer.from(d as ArrayBuffer);
 					const binaryChunkData = decode(raw, this.encryptionKey, true);
 
-					handler.onChunk(binaryChunkData);
-					return;
+					return handler.onChunk(binaryChunkData as Buffer<ArrayBufferLike>);
 				}
 
-				let msg: any;
+				let msg: RelayMessage | null = parseMessage(d.toString());
 
-				try {
-					msg = JSON.parse(d.toString());
-				} catch {
-					console.error("Invalid JSON:", d.toString());
+				if (!msg) {
 					return;
 				}
 
@@ -129,7 +137,7 @@ export class RelayClient extends EventEmitter {
 
 				if (msg.type === "client_hello_failure") {
 					vscode.window.showErrorMessage("Failed to connect to server. Ensure the server is running and the password is correct.");
-					
+
 					setTimeout(() => {
 						if (this.dontAttemptToReconnect || this.connected) {
 							return;
@@ -142,9 +150,11 @@ export class RelayClient extends EventEmitter {
 				}
 
 				if (msg.type === "server_update") {
-					fullyConnected = true;
 					vscode.window.showInformationMessage("Connected to server");
+
 					this.serverName = msg.serverName;
+					fullyConnected = true;
+
 					this.emit("connected");
 
 					if (!settled) {
@@ -152,10 +162,6 @@ export class RelayClient extends EventEmitter {
 						resolve();
 					}
 
-					return;
-				}
-
-				if (msg.type === "server_rpc_stream_start") {
 					return;
 				}
 
@@ -181,10 +187,10 @@ export class RelayClient extends EventEmitter {
 					const cb = this.pending.get(msg.requestId);
 
 					if (cb) {
-						const obj = decode(msg.response as string, this.encryptionKey);
+						const obj = decode(msg.response, this.encryptionKey);
 
 						this.pending.delete(msg.requestId);
-						cb(obj);
+						cb(obj as RelayRPCResponses);
 					}
 				}
 			});
@@ -198,8 +204,8 @@ export class RelayClient extends EventEmitter {
 					clearInterval(this.heartbeat);
 				}
 
-				for (const [, cb] of this.pending) {
-					cb({ success: false, error: "Disconnected" });
+				for (const [requestId, cb] of this.pending) {
+					cb({ success: false, error_code: "connection_lost", requestId });
 				}
 
 				this.pending.clear();
@@ -233,7 +239,7 @@ export class RelayClient extends EventEmitter {
 		});
 	}
 
-	send(obj: any) {
+	send(obj: RelayMessage) {
 		if (!this.connected) {
 			return;
 		}
@@ -241,39 +247,39 @@ export class RelayClient extends EventEmitter {
 		this.ws.send(JSON.stringify(obj));
 	}
 
-	rpc(action: string, payload: any): Promise<any> {
+	rpc(action: string, payload: RelayRPCRequest): Promise<RelayRPCResponses> {
 		if (!this.connected) {
 			return Promise.reject(new Error("Not connected"));
 		}
 
-		const id = this.requestId++;
+		const currentRequestId = this.requestId++;
 
 		return new Promise((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				this.pending.delete(id);
-				reject(new Error("RPC timeout"));
+			const requestTimeout = setTimeout(() => {
+				this.pending.delete(currentRequestId);
+				reject({ success: false, error_code: "connection_lost", requestId: currentRequestId });
 			}, 15000);
 
-			this.pending.set(id, (data) => {
-				clearTimeout(timeout);
-				resolve(data);
+			this.pending.set(currentRequestId, (data: RelayRPCResponses) => {
+				clearTimeout(requestTimeout);
+				resolve({ ...data, requestId: currentRequestId });
 			});
 
 			this.send({
 				type: "client_rpc",
-				requestId: id,
+				requestId: currentRequestId,
 				action,
 				payload: encode(payload, this.encryptionKey)
 			});
 		});
 	}
 
-	getLastRequestId() {
-		return this.requestId - 1;
+	stream(requestId: number, onChunk: (chunk: Buffer) => void, onEnd: () => void) {
+		this.pendingStreams.set(requestId, { onChunk, onEnd });
 	}
 
-	stream(requestId: number, onChunk: (chunk: any) => void, onEnd: () => void) {
-		this.pendingStreams.set(requestId, { onChunk, onEnd });
+	streamFillBuffer(requestId: number, buffer: Buffer<ArrayBufferLike>[] | Uint8Array[]): Promise<void> {
+		return new Promise((resolve) => this.stream(requestId, (chunk) => buffer.push(chunk), () => resolve()));
 	}
 
 	stopStream(requestId: number) {

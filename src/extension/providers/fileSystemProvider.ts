@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 import { RelayClient } from "../modules/relay";
-import { FileSystemError } from "vscode";
-import { ActiveConnection, Server } from "../types";
+import { ActiveConnection, ListFilesEntry, RelayRPCResponseCopy, RelayRPCResponseDelete, RelayRPCResponseListFiles, RelayRPCResponseMkdir, RelayRPCResponseRead, RelayRPCResponseRename, RelayRPCResponseStat, RelayRPCResponseTruncate, RelayRPCResponseWrite, Server } from "../types";
 
 export function useRemoteFS(relay: RelayClient, context: vscode.ExtensionContext) {
 	if (!globalThis.gmodRemoteFileSystemProvider) {
@@ -64,6 +63,31 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 		return uri.path;
 	}
 
+	private throwError(errorCode: string | undefined, path: string) {
+		if (!errorCode) {
+			throw vscode.FileSystemError.Unavailable("An unknown error occurred");
+		}
+
+		switch (errorCode) {
+			case "not_connected":
+				throw vscode.FileSystemError.Unavailable("Not connected");
+			case "not_a_file":
+				throw vscode.FileSystemError.FileIsADirectory(path);
+			case "not_a_directory":
+				throw vscode.FileSystemError.FileNotADirectory(path);
+			case "file_not_found":
+				throw vscode.FileSystemError.FileNotFound(path);
+			case "file_already_exists":
+				throw vscode.FileSystemError.FileExists(path);
+			case "directory_already_exists":
+				throw vscode.FileSystemError.FileExists(path);
+			case "connection_lost":
+				throw vscode.FileSystemError.Unavailable("Connection lost");
+			default:
+				throw vscode.FileSystemError.Unavailable("An unknown error occurred: " + errorCode);
+		}
+	}
+
 	async stat(uri: vscode.Uri): Promise<vscode.FileStat> {
 		if (uri.path === "/") {
 			return {
@@ -78,22 +102,22 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 			throw vscode.FileSystemError.Unavailable("Not connected");
 		}
 
-		const res = await this.relay.rpc("FS.Stat", {
+		const res: RelayRPCResponseStat = await this.relay.rpc("FS.Stat", {
 			path: this.toServerPath(uri)
 		});
 
 		if (!res.success) {
 
-			throw FileSystemError.FileNotFound(uri.path);
+			throw vscode.FileSystemError.FileNotFound(uri.path);
 		}
 
 		return {
 			type: res.type === "directory"
 				? vscode.FileType.Directory
 				: vscode.FileType.File,
-			ctime: res.created,
-			mtime: res.modified,
-			size: res.size
+			ctime: res.created || Date.now(),
+			mtime: res.modified || Date.now(),
+			size: res.size || 0
 		};
 	}
 
@@ -103,7 +127,7 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 			throw vscode.FileSystemError.Unavailable("Not connected");
 		}
 
-		const res = await this.relay.rpc("FS.ListFiles", {
+		const res: RelayRPCResponseListFiles = await this.relay.rpc("FS.ListFiles", {
 			path: this.toServerPath(uri)
 		});
 
@@ -116,7 +140,7 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 			}
 		}
 
-		return res.entries.map((e: any) => [
+		return res.entries!.map((e: ListFilesEntry): [string, vscode.FileType] => [
 			e.name,
 			e.type === "directory"
 				? vscode.FileType.Directory
@@ -126,34 +150,25 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 
 	async readFile(uri: vscode.Uri): Promise<Uint8Array> {
 		if (!this.connected) {
-			throw vscode.FileSystemError.Unavailable("Not connected");
+			this.throwError("not_connected", uri.path);
 		}
 
 		const serverPath = this.toServerPath(uri);
 
-
-		const res = await this.relay.rpc("FS.Read", {
+		const res: RelayRPCResponseRead = await this.relay.rpc("FS.Read", {
 			path: serverPath
 		});
 
 		if (!res.success) {
-			switch (res.error_code) {
-				case "not_a_file":
-					throw FileSystemError.FileIsADirectory(uri.path);
-				default:
-					throw FileSystemError.FileNotFound(uri.path);
-			}
+			this.throwError(res.error_code, uri.path);
 		}
 
+		const requestId = res.requestId;
 		let fileChunks: Uint8Array[] = [];
 
-		return new Promise((resolve) => {
-			this.relay.stream(this.relay.getLastRequestId(), (chunk) => {
-				fileChunks.push(chunk);
-			}, () => {
-				resolve(Buffer.concat(fileChunks));
-			});
-		});
+		await this.relay.streamFillBuffer(requestId, fileChunks);
+
+		return Buffer.concat(fileChunks);
 	}
 
 	async writeFile(uri: vscode.Uri, content: Uint8Array) {
@@ -161,43 +176,40 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 			throw vscode.FileSystemError.Unavailable("Not connected");
 		}
 
-		const res = await this.relay.rpc("FS.Write", {
+		const res: RelayRPCResponseWrite = await this.relay.rpc("FS.Write", {
 			path: this.toServerPath(uri),
 			offset: 0,
 			data: Buffer.from(content).toString("base64")
 		});
 
 		if (!res.success) {
-			throw FileSystemError.FileNotFound(uri.path);
+			this.throwError(res.error_code, uri.path);
 		}
 
-		await this.relay.rpc("FS.Truncate", {
+		const truncateRes: RelayRPCResponseTruncate = await this.relay.rpc("FS.Truncate", {
 			path: this.toServerPath(uri),
 			size: content.length
 		});
+
+		if (!truncateRes.success && truncateRes.error_code) {
+			this.throwError(truncateRes.error_code, uri.path);
+		}
 
 		this.refresh(uri);
 	}
 
 	async copy(sourceUri: vscode.Uri, destinationUri: vscode.Uri) {
 		if (!this.connected) {
-			throw vscode.FileSystemError.Unavailable("Not connected");
+			this.throwError("not_connected", sourceUri.path);
 		}
 
-		const res = await this.relay.rpc("FS.Copy", {
+		const res: RelayRPCResponseCopy = await this.relay.rpc("FS.Copy", {
 			from: this.toServerPath(sourceUri),
 			to: this.toServerPath(destinationUri)
 		});
 
 		if (!res.success) {
-			switch (res.error_code) {
-				case "file_not_found":
-					throw FileSystemError.FileNotFound(sourceUri.path);
-				case "file_already_exists":
-					throw FileSystemError.FileExists(destinationUri.path);
-				default:
-					throw FileSystemError.FileNotFound(sourceUri.path);
-			}
+			this.throwError(res.error_code, sourceUri.path);
 		}
 
 		this.refresh(destinationUri);
@@ -205,20 +217,15 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 
 	async createDirectory(uri: vscode.Uri) {
 		if (!this.connected) {
-			throw vscode.FileSystemError.Unavailable("Not connected");
+			this.throwError("not_connected", uri.path);
 		}
 
-		const res = await this.relay.rpc("FS.Mkdir", {
+		const res: RelayRPCResponseMkdir = await this.relay.rpc("FS.Mkdir", {
 			path: this.toServerPath(uri)
 		});
 
 		if (!res.success) {
-			switch (res.error_code) {
-				case "directory_already_exists":
-					throw vscode.FileSystemError.FileExists(uri.path);
-				default:
-					throw vscode.FileSystemError.FileNotFound(uri.path);
-			}
+			this.throwError(res.error_code, uri.path);
 		}
 
 		this.refresh(uri);
@@ -226,15 +233,15 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 
 	async delete(uri: vscode.Uri) {
 		if (!this.connected) {
-			throw vscode.FileSystemError.Unavailable("Not connected");
+			this.throwError("not_connected", uri.path);
 		}
 
-		const res = await this.relay.rpc("FS.Delete", {
+		const res: RelayRPCResponseDelete = await this.relay.rpc("FS.Delete", {
 			path: this.toServerPath(uri)
 		});
 
 		if (!res.success) {
-			throw FileSystemError.FileNotFound(uri.path);
+			this.throwError(res.error_code, uri.path);
 		}
 
 		this.refresh(uri);
@@ -242,21 +249,16 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 
 	async rename(oldUri: vscode.Uri, newUri: vscode.Uri) {
 		if (!this.connected) {
-			throw vscode.FileSystemError.Unavailable("Not connected");
+			this.throwError("not_connected", oldUri.path);
 		}
 
-		const res = await this.relay.rpc("FS.Rename", {
+		const res: RelayRPCResponseRename = await this.relay.rpc("FS.Rename", {
 			from: this.toServerPath(oldUri),
 			to: this.toServerPath(newUri)
 		});
 
 		if (!res.success) {
-			switch (res.error_code) {
-				case "file_already_exists":
-					throw FileSystemError.FileExists(newUri.path);
-				default:
-					throw FileSystemError.FileNotFound(newUri.path);
-			}
+			this.throwError(res.error_code, newUri.path);
 		}
 
 		this.refresh(newUri);

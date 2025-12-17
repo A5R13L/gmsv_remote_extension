@@ -219,8 +219,7 @@ export class SearchViewProvider implements vscode.WebviewViewProvider, vscode.Di
 		}
 
 		try {
-			await this.searchProvider.search(this.currentQuery, this.searchOptions);
-			this.lastSearchRequestId = this.relay.getLastRequestId();
+			this.lastSearchRequestId = await this.searchProvider.search(this.currentQuery, this.searchOptions);
 		} catch (error) {
 			if (!this.disposed) {
 				const errorMessage = error instanceof Error ? error.message : String(error);

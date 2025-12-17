@@ -1,5 +1,5 @@
 import { RelayClient } from "../modules/relay";
-import type { SearchChunk, SearchOptions } from "../types";
+import type { RelayRPCResponseSearch, SearchChunk, SearchOptions } from "../types";
 
 export function useSearchProvider(relay: RelayClient) {
 	if (!globalThis.gmodSearchProvider) {
@@ -20,7 +20,7 @@ export class SearchProvider {
 	}
 
 	async search(query: string, options: SearchOptions) {
-		const response = await this.relay.rpc("FS.Search", {
+		const res: RelayRPCResponseSearch = await this.relay.rpc("FS.Search", {
 			query,
 			caseSensitive: options.caseSensitive,
 			useRegex: options.useRegex,
@@ -29,14 +29,14 @@ export class SearchProvider {
 			excludeFiles: options.excludeFiles || ""
 		});
 
-		if (!response.success) {
+		if (!res.success) {
 			throw new Error("An error occurred while searching for files.");
 		}
 
 		this.searching = true;
 		this.onStart?.();
 
-		this.relay.stream(this.relay.getLastRequestId(), (chunk: Buffer) => {
+		this.relay.stream(res.requestId, (chunk: Buffer) => {
 			let chunkString = chunk.toString("utf8");
 			let searchResults: SearchChunk[] | null = null;
 
@@ -51,6 +51,8 @@ export class SearchProvider {
 			this.searching = false;
 			this.onEnd?.();
 		});
+
+		return res.requestId;
 	}
 
 	isSearching() {
